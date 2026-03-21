@@ -2,9 +2,9 @@
 Active nematic turbulence simulation — Lavi et al. PRR 2026.
 Equations (6)–(8) with pseudospectral solver.
 """
+__version__ = '0.1.0'
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button, RadioButtons
 from matplotlib.animation import FuncAnimation
@@ -522,8 +522,13 @@ def build_ui(N=64, A=3.2e5):
 
 # ── entry point ────────────────────────────────────────────────────────────────
 
-if __name__ == '__main__':
+def main():
     import sys
+    matplotlib.use('TkAgg')
     N = int(sys.argv[1]) if len(sys.argv) > 1 else 64
     fig, sim, anim = build_ui(N=N)
     plt.show()
+
+
+if __name__ == '__main__':
+    main()
