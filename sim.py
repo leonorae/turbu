@@ -6,7 +6,7 @@ __version__ = '0.1.0'
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider, Button, RadioButtons
+from matplotlib.widgets import Slider, Button
 from matplotlib.animation import FuncAnimation
 import warnings
 warnings.filterwarnings('ignore')
@@ -339,15 +339,16 @@ def build_ui(N=64, A=3.2e5):
     for b in (btn_pause, btn_reset, btn_extens, btn_contra):
         b.label.set_color('white')
 
-    # ── radio: view mode ──
-    ax_radio = fig.add_axes([0.60, 0.05, 0.37, 0.20])
-    ax_radio.set_facecolor('#0d0d1a')
-    radio = RadioButtons(ax_radio, VIEW_MODES,
-                         activecolor='#6699ff')
-    ax_radio.set_title('View mode', color='#aaa', fontsize=8, pad=2)
-    for lbl in radio.labels:
-        lbl.set_color('white')
-        lbl.set_fontsize(8)
+    # ── view mode buttons ──
+    view_btns = []
+    for i, mode in enumerate(VIEW_MODES):
+        ax_v = fig.add_axes([0.60, 0.19 - i*0.045, 0.37, 0.038])
+        bv = Button(ax_v, mode, color='#3a3a6e', hovercolor='#5555aa')
+        bv.label.set_color('white')
+        bv.label.set_fontsize(8)
+        view_btns.append(bv)
+    # highlight default
+    view_btns[VIEW_MODES.index(view[0])].ax.set_facecolor('#6666cc')
 
     # ── preset buttons ──
     preset_axes = []
@@ -408,10 +409,15 @@ def build_ui(N=64, A=3.2e5):
     btn_extens.on_clicked(set_extensile)
     btn_contra.on_clicked(set_contractile)
 
-    def set_view(label):
-        view[0] = label
+    def set_view(mode, btn):
+        view[0] = mode
+        for b in view_btns:
+            b.ax.set_facecolor('#3a3a6e')
+        btn.ax.set_facecolor('#6666cc')
+        fig.canvas.draw_idle()
 
-    radio.on_clicked(set_view)
+    for bv, mode in zip(view_btns, VIEW_MODES):
+        bv.on_clicked(lambda _, m=mode, b=bv: set_view(m, b))
 
     def set_preset(pname):
         p = PRESETS[pname]
