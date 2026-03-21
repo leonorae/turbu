@@ -8,6 +8,8 @@ import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 from matplotlib.animation import FuncAnimation
+import threading
+import time
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -80,6 +82,12 @@ class ActiveNematic:
 
         # Previous-step explicit RHS for AB2
         self._prev_rhs = None
+
+        # Cached per-step diagnostics (populated by _step_once, reused by accessors)
+        self._vx    = np.zeros((N, N))
+        self._vy    = np.zeros((N, N))
+        self._omega = np.zeros((N, N))
+        self._frank = np.zeros((N, N))
 
     # ── stream-function ────────────────────────────────────────────────────────
 
@@ -230,27 +238,28 @@ class ActiveNematic:
         self.theta = irfft(th_new_h)
         self.t += dt
 
+        # Cache diagnostics so accessors need not redo FFTs this frame
+        self._vx    = vx
+        self._vy    = vy
+        self._omega = omega
+        dx_new = irfft(1j * KX * th_new_h)
+        dy_new = irfft(1j * KY * th_new_h)
+        self._frank = dx_new**2 + dy_new**2
+
     # ── diagnostics ────────────────────────────────────────────────────────────
 
     def velocity(self):
-        psi_h = np.fft.fft2(self.psi) * self.mask
-        vx = irfft( 1j * self.KY * psi_h)
-        vy = irfft(-1j * self.KX * psi_h)
-        return vx, vy
+        return self._vx, self._vy
 
     def frank_density(self):
-        th_h  = np.fft.fft2(self.theta) * self.mask
-        dx_th = irfft(1j * self.KX * th_h)
-        dy_th = irfft(1j * self.KY * th_h)
-        return dx_th**2 + dy_th**2
+        return self._frank
 
     def director(self):
         """Unit director field (nx, ny) = (cos θ, sin θ)"""
         return np.cos(self.theta), np.sin(self.theta)
 
     def vorticity(self):
-        psi_h = np.fft.fft2(self.psi) * self.mask
-        return irfft(self.K2 * psi_h)
+        return self._omega
 
     def reset(self, seed=None):
         rng = np.random.default_rng(seed)
@@ -258,6 +267,10 @@ class ActiveNematic:
         self.psi   = np.zeros((self.N, self.N))
         self._prev_rhs = None
         self.t = 0.0
+        self._vx    = np.zeros((self.N, self.N))
+        self._vy    = np.zeros((self.N, self.N))
+        self._omega = np.zeros((self.N, self.N))
+        self._frank = np.zeros((self.N, self.N))
 
 
 # ── Interactive visualisation ──────────────────────────────────────────────────
@@ -374,6 +387,61 @@ def build_ui(N=64, A=3.2e5):
     spec_line, = ax_spec.semilogy([1], [1], color='#6699ff', lw=1.5)
     ax_spec.set_xlim(0, 0.5)
 
+    # ── Frank energy spectrum — precompute index arrays once ──
+    _sk1d  = np.fft.fftfreq(N)
+    _sKX, _sKY = np.meshgrid(_sk1d, _sk1d, indexing='ij')
+    _skr   = np.sqrt(_sKX**2 + _sKY**2).ravel()
+    _sbins = np.linspace(0, 0.5, N//2 + 1)
+    _sqmid = 0.5 * (_sbins[:-1] + _sbins[1:])
+    _sn    = len(_sqmid)
+    # bin index for each k-point; points outside [0, 0.5) are excluded
+    _sidx  = np.clip(np.digitize(_skr, _sbins) - 1, 0, _sn - 1)
+    _smask = _skr < 0.5  # exclude Nyquist corner
+
+    def frank_spectrum(frank):
+        fh_flat = (np.abs(np.fft.fft2(frank))**2).ravel()
+        idx = _sidx[_smask];  w = fh_flat[_smask]
+        spec = np.bincount(idx, weights=w, minlength=_sn).astype(float)
+        cnt  = np.bincount(idx,            minlength=_sn).astype(float)
+        with np.errstate(invalid='ignore'):
+            spec = np.where(cnt > 0, spec / cnt, 0.0)
+        return _sqmid, np.maximum(spec, 1e-30)
+
+    # ── simulation lock + latest-state slot (written by worker, read by animate) ──
+    _sim_lock = threading.Lock()
+    _state    = [None]   # latest snapshot dict
+    _stop     = [False]
+
+    def _compute_worker():
+        while not _stop[0]:
+            if running[0]:
+                with _sim_lock:
+                    sim.step(n_sub=STEPS_PER_FRAME)
+                    blowup = (not np.isfinite(sim.theta).all() or
+                              np.abs(sim.theta).max() > 1e6)
+                    if blowup:
+                        sim.reset()
+                        _state[0] = {'blowup': True}
+                        continue
+                    speed  = np.hypot(sim._vx, sim._vy)
+                    snap = {
+                        'blowup': False,
+                        'speed':  speed,
+                        'frank':  sim._frank.copy(),
+                        'theta':  sim.theta.copy(),
+                        'psi':    sim.psi.copy(),
+                        'omega':  sim._omega.copy(),
+                        't':      sim.t,
+                    }
+                # spectrum computed outside the lock (pure numpy, no sim access)
+                snap['q'], snap['sp'] = frank_spectrum(snap['frank'])
+                _state[0] = snap
+            else:
+                time.sleep(0.005)
+
+    _worker = threading.Thread(target=_compute_worker, daemon=True)
+    _worker.start()
+
     # ── callbacks ──
     def apply_sliders(_=None):
         sim.A  = sl_A.val
@@ -393,7 +461,8 @@ def build_ui(N=64, A=3.2e5):
         fig.canvas.draw_idle()
 
     def do_reset(_):
-        sim.reset()
+        with _sim_lock:
+            sim.reset()
         frame_n[0] = 0
 
     def set_extensile(_):
@@ -424,59 +493,38 @@ def build_ui(N=64, A=3.2e5):
         sim.S  = p['S']
         sim.nu = p['nu']
         sl_nu.set_val(p['nu'])
-        sim._prev_rhs = None
-        sim.reset()
+        with _sim_lock:
+            sim._prev_rhs = None
+            sim.reset()
 
     for btn, pname in zip(preset_btns, PRESETS):
         btn.on_clicked(lambda _, n=pname: set_preset(n))
 
-    # ── Frank energy spectrum helper ──
-    def frank_spectrum(frank):
-        N = frank.shape[0]
-        fh  = np.abs(np.fft.fft2(frank))**2
-        k1d = np.fft.fftfreq(N)        # in units of 1/L (cycle/box)
-        KX_, KY_ = np.meshgrid(k1d, k1d, indexing='ij')
-        kr = np.sqrt(KX_**2 + KY_**2)
-        kr_flat  = kr.ravel()
-        fh_flat  = fh.ravel()
-        bins = np.linspace(0, 0.5, N//2)
-        spec = np.zeros(len(bins)-1)
-        for i in range(len(bins)-1):
-            sel = (kr_flat >= bins[i]) & (kr_flat < bins[i+1])
-            spec[i] = fh_flat[sel].mean() if sel.any() else 0.0
-        qmid = 0.5*(bins[:-1]+bins[1:])
-        return qmid, np.maximum(spec, 1e-30)
-
-    # ── animation ──
+    # ── animation — only draws; computation is in _compute_worker ──
     def animate(frame):
-        frame_n[0] += 1
-        if running[0]:
-            sim.step(n_sub=STEPS_PER_FRAME)
-            # Auto-reset on blow-up (NaN or runaway values)
-            if not np.isfinite(sim.theta).all() or np.abs(sim.theta).max() > 1e6:
-                sim.reset()
-                info_txt.set_text('!! Blow-up detected — auto-reset !!')
-                return im, spec_line, info_txt, title_txt
+        snap = _state[0]
+        if snap is None:
+            return im, spec_line, info_txt, title_txt
 
-        vx, vy = sim.velocity()
-        speed  = np.hypot(vx, vy)
-        frank  = sim.frank_density()
+        if snap.get('blowup'):
+            info_txt.set_text('!! Blow-up detected — auto-reset !!')
+            return im, spec_line, info_txt, title_txt
+
         v_mode = view[0]
-
         if v_mode == 'Speed':
-            data = speed
+            data = snap['speed']
             cmap, title = 'viridis', 'Flow speed  |v|'
         elif v_mode == 'Frank energy':
-            data = frank
+            data = snap['frank']
             cmap, title = 'hot', 'Frank energy density  |∇θ|²'
         elif v_mode == 'Director angle':
-            data = sim.theta % np.pi    # head-tail symmetry
+            data = snap['theta'] % np.pi
             cmap, title = 'hsv', 'Director angle  θ  (mod π)'
         elif v_mode == 'Vorticity':
-            data = sim.vorticity()
+            data = snap['omega']
             cmap, title = 'RdBu', 'Vorticity  ω'
         else:
-            data = sim.psi
+            data = snap['psi']
             cmap, title = 'RdBu', 'Stream function  ψ'
 
         vmin, vmax = data.min(), data.max()
@@ -488,19 +536,18 @@ def build_ui(N=64, A=3.2e5):
         im.set_cmap(cmap)
         title_txt.set_text(title)
 
-        # Frank spectrum
-        q, sp = frank_spectrum(frank)
+        q, sp = snap['q'], snap['sp']
         spec_line.set_data(q, sp)
         pos = sp[np.isfinite(sp) & (sp > 0)]
         if pos.size:
             ax_spec.set_ylim(pos.min() * 0.1, pos.max() * 10)
 
-        # Info text
+        speed = snap['speed']
         regime = ('Strong turb.' if sim.S * sim.nu > 1
                   else 'Arrested' if sim.S * sim.nu < -1
                   else 'Non-aligning')
         info_txt.set_text(
-            f't = {sim.t:8.1f}   N = {sim.N}\n'
+            f't = {snap["t"]:8.1f}   N = {sim.N}\n'
             f'A = {sim.A:.2e}   R = {sim.R:.1f}\n'
             f'ν = {sim.nu:.2f}   S = {sim.S:+d}   Sν = {sim.S*sim.nu:.2f}\n'
             f'Regime: {regime}\n'
