@@ -370,16 +370,6 @@ def build_ui(N=64, A=3.2e5):
     cbar.outline.set_edgecolor('#444')
     title_txt = ax_main.set_title('', color='white', fontsize=9, pad=3)
 
-    # Streamline quiver (coarse)
-    stride = max(1, N // 16)
-    xs = np.linspace(0, 1, N//stride)
-    ys = np.linspace(0, 1, N//stride)
-    XQ, YQ = np.meshgrid(xs, ys)
-    quiv = ax_main.quiver(XQ, YQ,
-                          np.zeros_like(XQ), np.zeros_like(YQ),
-                          color='white', alpha=0.55, scale=None,
-                          width=0.003, headwidth=3, headlength=4)
-
     spec_line, = ax_spec.semilogy([1], [1], color='#6699ff', lw=1.5)
     ax_spec.set_xlim(0, 0.5)
 
@@ -487,14 +477,6 @@ def build_ui(N=64, A=3.2e5):
         im.set_cmap(cmap)
         title_txt.set_text(title)
 
-        # Quiver (coarse velocity)
-        stride = max(1, sim.N // 16)
-        ux = vx[::stride, ::stride]
-        uy = vy[::stride, ::stride]
-        spd_sub = speed[::stride, ::stride]
-        spd_max = spd_sub.max() + 1e-20
-        quiv.set_UVC(ux / spd_max, uy / spd_max)
-
         # Frank spectrum
         q, sp = frank_spectrum(frank)
         spec_line.set_data(q, sp)
@@ -513,7 +495,7 @@ def build_ui(N=64, A=3.2e5):
             f'⟨speed⟩ = {speed.mean():.3f}   max = {speed.max():.3f}'
         )
 
-        return im, quiv, spec_line, info_txt, title_txt
+        return im, spec_line, info_txt, title_txt
 
     anim = FuncAnimation(fig, animate, interval=60, blit=False, cache_frame_data=False)
 
