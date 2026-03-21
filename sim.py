@@ -314,10 +314,10 @@ def build_ui(N=64, A=3.2e5):
     ax_D  = fig.add_axes([0.08, 0.10, 0.44, 0.03])
     ax_dt = fig.add_axes([0.08, 0.05, 0.44, 0.03])
 
-    sl_A  = Slider(ax_A,  'Activity  A',  1e3, 1e6, valinit=A,   valfmt='%.1e', **sl_kw)
-    sl_nu = Slider(ax_nu, 'Alignment ν',  -2.0, 0.0, valinit=0.0, valfmt='%.2f', **sl_kw)
+    sl_A  = Slider(ax_A,  'Activity  A',  1e3, 1e6,  valinit=A,    valfmt='%.1e', **sl_kw)
+    sl_nu = Slider(ax_nu, 'Alignment ν',  -1.5, 0.0, valinit=0.0,  valfmt='%.2f', **sl_kw)
     sl_D  = Slider(ax_D,  'Noise  D',     0.0, 0.02, valinit=2.5e-3, valfmt='%.4f', **sl_kw)
-    sl_dt = Slider(ax_dt, 'dt',           0.002, 0.05, valinit=0.02, valfmt='%.3f', **sl_kw)
+    sl_dt = Slider(ax_dt, 'dt',           0.002, 0.03, valinit=0.02, valfmt='%.3f', **sl_kw)
 
     for sl in (sl_A, sl_nu, sl_D, sl_dt):
         sl.label.set_color('white')
@@ -452,6 +452,11 @@ def build_ui(N=64, A=3.2e5):
         frame_n[0] += 1
         if running[0]:
             sim.step(n_sub=STEPS_PER_FRAME)
+            # Auto-reset on blow-up (NaN or runaway values)
+            if not np.isfinite(sim.theta).all() or np.abs(sim.theta).max() > 1e6:
+                sim.reset()
+                info_txt.set_text('!! Blow-up detected — auto-reset !!')
+                return im, spec_line, info_txt, title_txt
 
         vx, vy = sim.velocity()
         speed  = np.hypot(vx, vy)
@@ -486,8 +491,9 @@ def build_ui(N=64, A=3.2e5):
         # Frank spectrum
         q, sp = frank_spectrum(frank)
         spec_line.set_data(q, sp)
-        ax_spec.set_ylim(sp[sp>0].min() * 0.1 if sp.max()>0 else 1e-6,
-                         sp.max() * 10)
+        pos = sp[np.isfinite(sp) & (sp > 0)]
+        if pos.size:
+            ax_spec.set_ylim(pos.min() * 0.1, pos.max() * 10)
 
         # Info text
         regime = ('Strong turb.' if sim.S * sim.nu > 1
