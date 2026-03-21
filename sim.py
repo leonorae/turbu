@@ -413,7 +413,12 @@ def build_ui(N=64, A=3.2e5):
     _stop     = [False]
 
     def _compute_worker():
+        # Target ~20 compute cycles/s so the CPU is not pinned when the
+        # direct solve (ν=0) completes in a few ms.  If the fixed-point
+        # iteration is slower the sleep shrinks to near zero automatically.
+        _TARGET = 0.05
         while not _stop[0]:
+            t0 = time.monotonic()
             if running[0]:
                 with _sim_lock:
                     sim.step(n_sub=STEPS_PER_FRAME)
@@ -422,6 +427,7 @@ def build_ui(N=64, A=3.2e5):
                     if blowup:
                         sim.reset()
                         _state[0] = {'blowup': True}
+                        time.sleep(max(0.001, _TARGET - (time.monotonic() - t0)))
                         continue
                     speed  = np.hypot(sim._vx, sim._vy)
                     snap = {
@@ -436,8 +442,7 @@ def build_ui(N=64, A=3.2e5):
                 # spectrum computed outside the lock (pure numpy, no sim access)
                 snap['q'], snap['sp'] = frank_spectrum(snap['frank'])
                 _state[0] = snap
-            else:
-                time.sleep(0.005)
+            time.sleep(max(0.001, _TARGET - (time.monotonic() - t0)))
 
     _worker = threading.Thread(target=_compute_worker, daemon=True)
     _worker.start()
